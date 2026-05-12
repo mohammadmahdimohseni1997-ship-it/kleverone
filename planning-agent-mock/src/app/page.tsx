@@ -228,12 +228,8 @@ export default function Home() {
           <div>
             <BriefInput onSubmit={handleBriefSubmit} />
             {extracting && (
-              <div
-                className="mt-3 inline-flex items-center gap-2 rounded-md bg-zinc-100 px-3 py-1.5 text-xs text-zinc-800"
-                aria-live="polite"
-              >
-                <span aria-hidden className="animate-pulse">●</span>
-                <span>Extracting brief with Kimi…</span>
+              <div className="mt-3">
+                <LoadingPill label="Extracting brief with Kimi…" />
               </div>
             )}
             {extractError && (
@@ -351,6 +347,12 @@ export default function Home() {
               </div>
             )}
 
+            {step === "generating" && (
+              <div className="mb-4">
+                <LoadingPill label="Generating plan with Kimi…" />
+              </div>
+            )}
+
             {step === "plan" && displayPlan.dspAssessment && (
               <DspAssessmentPanel assessment={displayPlan.dspAssessment} />
             )}
@@ -381,6 +383,39 @@ export default function Home() {
           </div>
         )}
       </main>
+    </div>
+  );
+}
+
+function LoadingPill({ label }: { label: string }) {
+  return (
+    <div
+      className="inline-flex items-center gap-2.5 rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-800 shadow-sm"
+      aria-live="polite"
+      role="status"
+    >
+      <svg
+        className="h-4 w-4 animate-spin text-zinc-700 motion-reduce:animate-none"
+        viewBox="0 0 24 24"
+        fill="none"
+        aria-hidden
+      >
+        <circle
+          cx="12"
+          cy="12"
+          r="10"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeOpacity="0.2"
+        />
+        <path
+          d="M12 2 a 10 10 0 0 1 10 10"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+        />
+      </svg>
+      <span>{label}</span>
     </div>
   );
 }
