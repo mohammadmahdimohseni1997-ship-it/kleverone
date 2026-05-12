@@ -70,6 +70,7 @@ async function callKimi(
     model: MOONSHOT_MODEL,
     messages,
     temperature: 0.3,
+    max_tokens: 4000,
     response_format: { type: "json_object" },
   });
   return completion.choices[0]?.message?.content ?? "";
