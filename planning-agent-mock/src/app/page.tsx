@@ -44,8 +44,15 @@ export default function Home() {
       });
       const data = await res.json();
       if (!res.ok) {
+        const detail =
+          typeof data?.detail === "string"
+            ? data.detail
+            : data?.detail
+            ? JSON.stringify(data.detail)
+            : null;
         throw new Error(
-          data?.message || data?.error || `Extraction failed (${res.status})`
+          [data?.error, detail, data?.message].filter(Boolean).join(" — ") ||
+            `Extraction failed (${res.status})`
         );
       }
       setStructuredBrief(data.brief as Brief);
@@ -77,14 +84,15 @@ export default function Home() {
       });
       const data = await res.json();
       if (!res.ok) {
+        const detail =
+          typeof data?.detail === "string"
+            ? data.detail
+            : data?.detail
+            ? JSON.stringify(data.detail)
+            : null;
         throw new Error(
-          data?.detail
-            ? `${data.error}: ${
-                typeof data.detail === "string"
-                  ? data.detail
-                  : JSON.stringify(data.detail)
-              }`
-            : data?.message || data?.error || `Generation failed (${res.status})`
+          [data?.error, detail, data?.message].filter(Boolean).join(" — ") ||
+            `Generation failed (${res.status})`
         );
       }
 
@@ -233,10 +241,12 @@ export default function Home() {
                 <div className="mb-1 font-semibold uppercase tracking-wide">
                   Extraction failed
                 </div>
-                <div>{extractError}</div>
+                <div className="whitespace-pre-wrap break-words">{extractError}</div>
                 <div className="mt-2 text-red-800">
-                  Check that <code>MOONSHOT_API_KEY</code> is set in{" "}
-                  <code>.env.local</code> and restart the dev server.
+                  Check that <code>MOONSHOT_API_KEY</code>,{" "}
+                  <code>MOONSHOT_BASE_URL</code>, and <code>MOONSHOT_MODEL</code>{" "}
+                  are set on the server (Railway Variables or local{" "}
+                  <code>.env.local</code>).
                 </div>
               </div>
             )}
