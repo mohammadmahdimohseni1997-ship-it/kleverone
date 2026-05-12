@@ -265,7 +265,7 @@ export default function Home() {
           />
         )}
 
-        {(step === "generating" || step === "plan") && displayPlan && structuredBrief && (
+        {(step === "generating" || step === "plan") && structuredBrief && (
           <div>
             <div className="mb-6 flex items-start justify-between gap-6">
               <div>
@@ -353,7 +353,7 @@ export default function Home() {
               </div>
             )}
 
-            {step === "plan" && displayPlan.dspAssessment && (
+            {step === "plan" && displayPlan?.dspAssessment && (
               <DspAssessmentPanel assessment={displayPlan.dspAssessment} />
             )}
 
@@ -366,20 +366,24 @@ export default function Home() {
               </div>
             )}
 
-            <PlanTable
-              plan={displayPlan}
-              onChange={handleLinesChange}
-              streaming={streaming}
-              expectedLineCount={expectedLineCount}
-              assessment={displayPlan.dspAssessment}
-              originalLines={originalPlan?.lines}
-            />
+            {displayPlan && (
+              <>
+                <PlanTable
+                  plan={displayPlan}
+                  onChange={handleLinesChange}
+                  streaming={streaming}
+                  expectedLineCount={expectedLineCount}
+                  assessment={displayPlan.dspAssessment}
+                  originalLines={originalPlan?.lines}
+                />
 
-            <p className="mt-3 text-xs text-zinc-700">
-              Spend % and rationale are editable inline. DSP lines carry a required
-              justification — pushing a DSP line above the model&apos;s share ceiling
-              surfaces an inline warning citing the original reason.
-            </p>
+                <p className="mt-3 text-xs text-zinc-700">
+                  Spend % and rationale are editable inline. DSP lines carry a required
+                  justification — pushing a DSP line above the model&apos;s share ceiling
+                  surfaces an inline warning citing the original reason.
+                </p>
+              </>
+            )}
           </div>
         )}
       </main>
