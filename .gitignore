@@ -1,0 +1,36 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.*
+
+# next.js
+.next/
+out/
+build/
+
+# env files — NEVER commit secrets
+.env
+.env.*
+!.env.example
+
+# vercel
+.vercel
+
+# misc OS / IDE
+.DS_Store
+*.pem
+*.tsbuildinfo
+next-env.d.ts
+Thumbs.db
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# tool result temp files
+tool-results/
+
+# claude local settings (personal, not project)
+.claude/settings.local.json

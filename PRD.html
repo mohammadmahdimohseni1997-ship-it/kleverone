@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>KleverOne Planning Agent — PRD (Sprint 1)</title>
+<style>
+  @page { size: Letter; margin: 0.6in 0.7in; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: #1f2937;
+    font-size: 10.5pt;
+    line-height: 1.45;
+    margin: 0;
+  }
+  h1 { font-size: 22pt; margin: 0 0 6pt 0; color: #111827; letter-spacing: -0.01em; }
+  h2 { font-size: 13pt; margin: 18pt 0 6pt 0; color: #111827; border-bottom: 1px solid #e5e7eb; padding-bottom: 3pt; }
+  h3 { font-size: 11pt; margin: 12pt 0 4pt 0; color: #111827; }
+  h4 { font-size: 10.5pt; margin: 10pt 0 4pt 0; color: #111827; }
+  p, ul, ol { margin: 4pt 0 6pt 0; }
+  ul, ol { padding-left: 18pt; }
+  li { margin: 2pt 0; }
+  code { font-family: "Consolas", "Menlo", monospace; font-size: 9.5pt; background: #f3f4f6; padding: 1px 4px; border-radius: 3px; }
+  blockquote { margin: 6pt 0; padding: 4pt 10pt; border-left: 3px solid #10b981; background: #f0fdf4; color: #1f2937; font-style: italic; }
+  table { border-collapse: collapse; width: 100%; margin: 6pt 0 10pt 0; font-size: 10pt; page-break-inside: avoid; }
+  th, td { border: 1px solid #e5e7eb; padding: 5pt 8pt; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; font-weight: 600; }
+  .meta { color: #6b7280; font-size: 9.5pt; margin-bottom: 14pt; }
+  .meta strong { color: #374151; }
+  .callout { border-left: 3px solid #2563eb; background: #eff6ff; padding: 6pt 10pt; margin: 8pt 0; }
+  hr { border: 0; border-top: 1px solid #e5e7eb; margin: 14pt 0; }
+  h2, h3, h4 { page-break-after: avoid; }
+  table, blockquote, .callout { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<h1>KleverOne Planning Agent — PRD (Sprint 1)</h1>
+<div class="meta">
+  <strong>Status:</strong> Draft v1 &nbsp;·&nbsp;
+  <strong>Owner:</strong> TBD &nbsp;·&nbsp;
+  <strong>Last updated:</strong> 2026-05-12 &nbsp;·&nbsp;
+  <strong>Source:</strong> <code>submission-v2.pdf</code>, <code>context.txt</code>
+</div>
+
+<h2>1. Summary</h2>
+<p>KleverOne's Planning Agent produces a <strong>first-draft media plan</strong> a Strategist will actually use, with <strong>SSP-direct as the default</strong> and <strong>DSP as the justified exception</strong>. Sprint 1 ships the thin end-to-end slice that validates the thesis plus the regression suite that protects it from week-two prompt regressions.</p>
+
+<h2>2. Problem</h2>
+<p>Klever is moving from a DSP-default architecture (TTD, DV360, Amazon DSP) to an ad-server-as-source-of-truth model where SSP-direct (PubMatic, Equativ, Magnite) is the default, AdCP/publisher-direct handles premium, and DSPs must earn their seat. Strategists today:</p>
+<ul>
+  <li>Build plans from scratch in slides.</li>
+  <li>Default to DSP thinking — the habit Klever is explicitly trying to break.</li>
+  <li>Have no shared mechanism for defending a DSP line to a client or to AdOps.</li>
+</ul>
+<p>Without a tool that <strong>makes SSP-direct-first reasoning visible and defensible</strong>, the architecture shift is policy, not practice.</p>
+
+<h2>3. Goals</h2>
+<ul>
+  <li>A Strategist can paste a brief and get a usable first-draft plan in one session.</li>
+  <li>Every DSP line in the plan carries a written, defensible justification.</li>
+  <li>DSP-default creep is detectable in CI before a prompt change reaches a Strategist.</li>
+  <li>Plans are inline-editable, exportable to AdOps (CSV) and to slides/notion (markdown).</li>
+</ul>
+
+<h3>Non-goals (Sprint 1)</h3>
+<ul>
+  <li>Writing plans to GAM or any ad server.</li>
+  <li>Live SSP/DSP MCP calls during generation — use a daily-refreshed deal snapshot.</li>
+  <li>Full AdCP integration — stub as named placeholders.</li>
+  <li>Catalog admin UI — catalog lives as JSON in repo, updated via PR.</li>
+  <li>Brand polish, history sidebar, sharing beyond per-user URLs.</li>
+  <li>Model-confidence-based "needs review" flagging on extracted fields.</li>
+</ul>
+
+<h2>4. Users</h2>
+<ul>
+  <li><strong>Primary: Account Strategist</strong> — programmatic-fluent, non-technical. Scopes/plans campaigns. Will not write prompts or edit JSON.</li>
+  <li><strong>Secondary: AdOps Trader</strong> — receives the plan as CSV for trafficking.</li>
+  <li><strong>Internal: Planning team / AI engineer</strong> — owns prompt, catalog, and eval suite.</li>
+</ul>
+
+<h2>5. Scope</h2>
+<h3>In scope (2-week sprint)</h3>
+<table>
+  <thead><tr><th>Capability</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Brief intake + confirmation</td><td>11-field structured extraction, inline-editable, edit telemetry</td></tr>
+    <tr><td>Plan generation</td><td>Deterministic DSP gate + LLM rationale + LLM allocation reasoning</td></tr>
+    <tr><td>Structured output</td><td>Required <code>dsp_justification</code> on every DSP line</td></tr>
+    <tr><td>Inline editing</td><td>Spend %, rationale, allocation rationale; totals recalculate</td></tr>
+    <tr><td>Exports</td><td>CSV (stable column order for AdOps), markdown copy</td></tr>
+    <tr><td>Persistence</td><td>Per-user plans on Vercel Postgres; stable URL</td></tr>
+    <tr><td>Auth</td><td>Vercel-protected route + email allowlist</td></tr>
+    <tr><td>Observability</td><td>Sentry, prompt versioning, full call logs</td></tr>
+    <tr><td>Regression suite</td><td>≥15 golden briefs, deterministic checks, LLM-judge rubric, CI</td></tr>
+  </tbody>
+</table>
+
+<h3>Out of scope / deferred</h3>
+<p>Live MCP calls during generation, AdCP integration, GAM line export, catalog admin UI, brand polish, history sidebar / shared URLs, low-confidence field flagging.</p>
+
+<h2>6. User stories &amp; acceptance criteria</h2>
+
+<h3>Story 1 — Brief intake and confirmation</h3>
+<blockquote>As a Strategist, I paste a brief in plain language and confirm what the agent extracted before it drafts the plan.</blockquote>
+<ul>
+  <li>Free text → structured extraction within <strong>60s</strong>.</li>
+  <li>Confirmation surfaces the 11 fields: <strong>advertiser, vertical, budget, flight, KPI, goal, geo, audience, inventory, exclusions, channels</strong>.</li>
+  <li>All fields inline-editable; edits captured as structured events.</li>
+  <li>Low-confidence extractions marked "needs review" and must be confirmed before Generate. <em>(Deferred to post-v1 if extractor cannot emit confidence cleanly — see §3 non-goals.)</em></li>
+</ul>
+
+<h3>Story 2 — SSP-direct-first plan, defended DSP gate</h3>
+<blockquote>As a Strategist, I get a draft plan where SSP-direct is the default and any DSP line carries a justification I can defend to a client.</blockquote>
+<ul>
+  <li>Briefs without DSP-eligible signals yield <strong>zero</strong> DSP lines.</li>
+  <li>Every DSP line carries a justification covering: what's unique, what SSP/AdCP cannot do, why this share.</li>
+  <li>Plan-level <strong>DSP gate summary</strong>: considered, earned, rejected with reasons.</li>
+  <li>All <code>capability_id</code> and <code>deal_ref</code> values resolve against the catalog/snapshot; hallucinations fail generation.</li>
+  <li>Line shares sum to 100% of budget.</li>
+</ul>
+
+<h3>Story 3 — Allocation reasoning that defends itself</h3>
+<blockquote>As a Strategist, every line tells me why it got the share it did; editing a DSP line above its ceiling surfaces the original reasoning inline.</blockquote>
+<ul>
+  <li>Every line has an <code>allocation_rationale</code> <strong>distinct from</strong> <code>rationale</code>.</li>
+  <li>Allocation rationale names: the share, the brief constraint driving it, a trade-off vs an alternative share.</li>
+  <li>DSP lines carry a <code>share_ceiling</code> + reason.</li>
+  <li>Editing above the ceiling surfaces the original reason <strong>in the row</strong> (not tooltip-only).</li>
+</ul>
+
+<h3>Story 4 — Edit, capture, hand off</h3>
+<blockquote>As a Strategist, I edit the plan inline, edits become structured feedback, and I can hand off to AdOps in a usable format.</blockquote>
+<ul>
+  <li>Spend %, rationale, allocation rationale all inline-editable; totals recalculate.</li>
+  <li>"N edits captured" indicator whenever the plan diverges from the original.</li>
+  <li><strong>CSV export</strong> with stable column order for AdOps trafficking.</li>
+  <li><strong>Markdown copy</strong> for Slides/Notion paste.</li>
+  <li>Plans persist per user via stable URL.</li>
+</ul>
+
+<h3>Story 5 — Regression-protected DSP default (team story)</h3>
+<blockquote>As the planning team, we detect DSP-default creep before a prompt change or model swap reaches a Strategist.</blockquote>
+<ul>
+  <li>Regression set of <strong>≥15 briefs</strong> covering: pure-SSP, YouTube-in-scope, retargeting-performance, retail-performance, underspecified-edge.</li>
+  <li>Suite runs on every prompt/model change in CI; results versioned.</li>
+  <li><strong>Hard gates</strong> (block deploy):
+    <ul>
+      <li>Schema validation 100%.</li>
+      <li>Zero <code>capability_id</code> / <code>deal_ref</code> hallucinations.</li>
+      <li>DSP share ≤15% on pure-SSP briefs.</li>
+      <li>Every DSP line carries a non-empty justification.</li>
+    </ul>
+  </li>
+  <li><strong>Soft gates</strong> (LLM-judged vs reference plans): rationale, allocation, and justification quality — regressions reviewed before merge.</li>
+</ul>
+
+<h2>7. Functional requirements</h2>
+<h3>Plan-output schema (locked surface for v1)</h3>
+<p>Every plan contains:</p>
+<ul>
+  <li><code>lines[]</code> with <code>channel</code>, <code>path</code> (<code>ssp_direct</code> | <code>adcp</code> | <code>dsp</code>), <code>capability_id[]</code>, <code>deal_ref[]</code>, <code>spend_share</code>, <code>rationale</code>, <code>allocation_rationale</code>.</li>
+  <li>DSP lines additionally require: <code>dsp_justification</code>, <code>share_ceiling</code>, <code>share_ceiling_reason</code>.</li>
+  <li>Plan-level: <code>dsp_gate_summary</code> { considered, earned, rejected[] with reason }.</li>
+  <li>Schema must remain translatable to GAM insertion-order / line-item shape (see open question 3).</li>
+</ul>
+
+<h3>Deterministic DSP gate (pre-LLM)</h3>
+<p>A rules layer decides DSP-eligibility from extracted brief signals (YouTube-in-scope, retargeting, performance KPI, etc.) <strong>before</strong> generation. The LLM cannot introduce a DSP line unless the gate has marked it earned; if it tries, the structured-output validator rejects the plan.</p>
+
+<h3>Catalog &amp; deal snapshot</h3>
+<ul>
+  <li>Capabilities catalog: JSON in repo, PR-flow updates.</li>
+  <li>Deal snapshot: daily-refreshed JSON dump from SSPs; treated as the resolvable universe for <code>deal_ref</code>.</li>
+</ul>
+
+<h2>8. Success metrics</h2>
+<ul>
+  <li><strong>Adoption:</strong> ≥1 Strategist uses the agent on a real brief by end of sprint 1.</li>
+  <li><strong>Trust:</strong> ≥70% of generated plans accepted with ≤3 edits in pilot week (proxy via edit telemetry).</li>
+  <li><strong>Cultural mechanic holds:</strong> DSP share on pure-SSP regression briefs stays ≤15% across the first 4 prompt iterations post-launch.</li>
+  <li><strong>Hand-off:</strong> AdOps can traffic from the CSV without re-keying.</li>
+</ul>
+
+<h2>9. Constraints &amp; assumptions</h2>
+<ul>
+  <li>Team: 1 full-stack + 1 AI engineer.</li>
+  <li>Strategists will not write prompts or edit JSON.</li>
+  <li>API/MCP access to required DSPs and SSPs exists, but not used live in v1.</li>
+  <li>Deploy target: Vercel + Vercel Postgres.</li>
+</ul>
+
+<h2>10. Dependencies</h2>
+<ul>
+  <li>Capabilities catalog content (owner TBD — see open question 2).</li>
+  <li>Golden-brief set + judge rubric signed off by a named Strategist (~4 hrs/week — see open question 1).</li>
+  <li>GAM (or equivalent) line-item shape reference for schema translation (see open question 3).</li>
+</ul>
+
+<h2>11. Open questions (blocking)</h2>
+<ol>
+  <li><strong>Who is the named authority on "this is a good plan"?</strong> Eval suite and LLM-judge prompts must calibrate against one human. Need one committed Strategist or planning lead at ~4 hrs/week through sprint 1.</li>
+  <li><strong>Is the capabilities catalog fit for purpose, and who owns it?</strong> Need every entry's description, channels, KPIs, limitations confirmed accurate and current before locking the prompt and the eval. Cleanup work, if needed, is outside the two-engineer scope.</li>
+  <li><strong>What does "ad-server source of truth" mean concretely for the plan-output schema?</strong> v1 doesn't write to GAM, but the plan schema must remain translatable to its insertion-order / line-item shape — otherwise the buying agent inherits a translation layer that didn't have to exist. Shape needed before schema lock.</li>
+</ol>
+
+<h2>12. Rollout</h2>
+<ul>
+  <li>Internal-only behind email allowlist on Vercel.</li>
+  <li>Sentry on; full prompt + completion logs retained.</li>
+  <li>Prompt versioning live from day 1; every plan record stores prompt version.</li>
+  <li>CI regression suite gates every prompt/model PR before merge.</li>
+</ul>
+
+<h2>13. Risks</h2>
+<table>
+  <thead><tr><th>Risk</th><th>Mitigation</th></tr></thead>
+  <tbody>
+    <tr><td>Prompt regresses to DSP-default after a tweak</td><td>Regression suite with hard gates in CI (Story 5)</td></tr>
+    <tr><td>LLM hallucinates <code>capability_id</code> / <code>deal_ref</code></td><td>Structured-output validator fails generation on unresolved refs</td></tr>
+    <tr><td>Strategists distrust output, revert to slides</td><td>Inline-editable plan + visible allocation rationale + edit telemetry to close the loop</td></tr>
+    <tr><td>Schema needs to change once GAM shape lands</td><td>Treat schema as v1; reserve a v2 migration; keep export layer thin</td></tr>
+  </tbody>
+</table>
+
+</body>
+</html>

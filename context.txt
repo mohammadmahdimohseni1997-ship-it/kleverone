@@ -1,0 +1,26 @@
+Context
+
+Klever is a Canadian programmatic agency. Historically we ran almost everything through DSPs (The Trade Desk, DV360, Amazon DSP). We're now shifting to a different architecture: an ad server as the source of truth, SSP-direct buying as the default (PubMatic, Equativ, Magnite), AdCP / publisher-direct for premium inventory, and DSPs as an exception when they add something the direct path can't. DSPs no longer earn the default — they have to justify their seat on a given plan.
+
+Our Account Strategists scope and plan campaigns; AdOps traders execute them across channels.
+
+We're building KleverOne, an internal agentic platform on top of this new stack. One of the early capabilities is a planning agent — it takes a campaign brief from a Strategist and produces a first-draft media plan: which channels to run on, how to split budget, which deals or PMPs, audience strategy, and which Klever capabilities from our catalog apply (e.g. attention-based bidding, contextual exclusion lists etc).
+
+A "brief" from a Strategist looks like:
+
+"Cosmetics brand, $400K, May–June, awareness KPI (video completion rate), Canada, 25–54 women, premium inventory, no UGC adjacencies."
+
+A good first-draft plan might propose: 65% via SSP-direct (PubMatic + Equativ, with deal IDs and a rationale tied to the KPI and inventory constraint), 25% AdCP/publisher-direct for premium video, 10% DV360 only because the brief allows YouTube (with a justification for why DV360 earns the budget vs an SSP path), capability matches from the catalog, frequency-cap approach handled by the ad server across all of it.
+
+Today, Strategists build this from scratch in slides and most of them still think in DSP-default terms, which is the habit we're explicitly trying to change.
+
+What to deliver
+3–5 user stories with acceptance criteria for the first version of the planning agent.
+One paragraph: sprint 1 vs deferred. What ships in the first two-week sprint, what gets cut, and why?
+Top 3 questions you'd ask before writing a line more of this brief.
+
+Constraints to assume
+One full-stack engineer + one AI engineer for the first few sprints.
+We have a structured capabilities catalog (each capability has a description, the channels it runs on, the KPIs it serves, known limitations). Treat it as a queryable source of truth on what we do.
+We have API / MCP access to the DSPs and SSPs we need.
+Strategists are programmatic-fluent but not technical. They will not write prompts or edit JSON.

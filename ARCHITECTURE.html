@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>KleverOne Planning Agent — Architecture (Sprint 1)</title>
+<style>
+  @page { size: Letter; margin: 0.55in 0.6in; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: #1f2937;
+    font-size: 9.8pt;
+    line-height: 1.42;
+    margin: 0;
+  }
+  h1 { font-size: 20pt; margin: 0 0 6pt 0; color: #111827; letter-spacing: -0.01em; }
+  h2 { font-size: 13pt; margin: 16pt 0 5pt 0; color: #111827; border-bottom: 1px solid #e5e7eb; padding-bottom: 3pt; }
+  h3 { font-size: 11pt; margin: 11pt 0 4pt 0; color: #111827; }
+  h4 { font-size: 10pt; margin: 9pt 0 3pt 0; color: #111827; }
+  p, ul, ol { margin: 4pt 0 5pt 0; }
+  ul, ol { padding-left: 16pt; }
+  li { margin: 1pt 0; }
+  code { font-family: "Consolas", "Menlo", monospace; font-size: 9pt; background: #f3f4f6; padding: 1px 3px; border-radius: 3px; }
+  pre { font-family: "Consolas", "Menlo", monospace; font-size: 8.6pt; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 4px; padding: 7pt 9pt; line-height: 1.35; overflow-x: hidden; white-space: pre-wrap; word-break: break-word; page-break-inside: avoid; }
+  pre code { background: transparent; padding: 0; font-size: inherit; }
+  blockquote { margin: 6pt 0; padding: 4pt 9pt; border-left: 3px solid #10b981; background: #f0fdf4; }
+  table { border-collapse: collapse; width: 100%; margin: 6pt 0 9pt 0; font-size: 9.2pt; page-break-inside: avoid; }
+  th, td { border: 1px solid #e5e7eb; padding: 4pt 7pt; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; font-weight: 600; }
+  hr { border: 0; border-top: 1px solid #e5e7eb; margin: 12pt 0; }
+  .meta { color: #6b7280; font-size: 9pt; margin-bottom: 12pt; }
+  .meta strong { color: #374151; }
+  h2, h3, h4 { page-break-after: avoid; }
+  table, blockquote, pre { page-break-inside: avoid; }
+  .part-header { background: #111827; color: #f9fafb; padding: 8pt 12pt; margin: 18pt 0 10pt 0; border-radius: 4px; font-size: 12pt; font-weight: 700; letter-spacing: 0.04em; }
+  strong { color: #111827; }
+</style>
+</head>
+<body>
+
+<h1>KleverOne Planning Agent — Architecture (Sprint 1)</h1>
+<div class="meta">
+  <strong>Status:</strong> Draft for engineering hand-off &nbsp;·&nbsp;
+  <strong>Audience:</strong> 1 full-stack engineer + 1 AI engineer + PO &nbsp;·&nbsp;
+  <strong>Last updated:</strong> 2026-05-12<br />
+  <strong>Source consultations:</strong> solution-architect, ai-engineer, fullstack-engineer, ux-designer, ui-designer, qa-engineer, product-manager<br />
+  <strong>Companion docs:</strong> <code>PRD.md</code>, <code>submission-v2.pdf</code>, <code>context.txt</code>
+</div>
+
+<h2>0. Executive Summary</h2>
+<p>A Next.js 16 App Router on Vercel, fronting a deterministic-first AI pipeline (Anthropic Claude Sonnet 4.6 + Haiku 4.5), persisting plans, briefs, edits, and a full model-call log to Vercel Postgres. The product's cultural job — make SSP-direct the default and DSP the defended exception — is enforced by <strong>three reinforcing layers</strong>:</p>
+<ol>
+  <li>A <strong>deterministic DSP gate</strong> before any LLM call decides which (if any) DSP vendors are even eligible.</li>
+  <li>A <strong>structured output contract</strong> that makes <code>dsp_justification</code> mandatory on every DSP line and capability/deal references non-hallucinable.</li>
+  <li>A <strong>regression harness in CI</strong> with hard gates on schema, hallucination, DSP share, and justification — running on every prompt or model PR.</li>
+</ol>
+<p>The frontend renders the plan as a dense, scannable table where DSP lines carry a dedicated always-visible justification column (the cultural mechanic must survive a screenshot, which row tints don't). Edits are inline, optimistic, captured as structured telemetry — the highest-fidelity feedback the platform will ever get. Sprint 1 defers live MCP calls, AdCP integration, GAM export, and SSO. What ships is end-to-end and protected.</p>
+
+<h2>1. System Diagram</h2>
+<pre>                                            ┌──────────────────────────────┐
+                                            │  Capabilities Catalog        │
+                                            │  /src/data/catalog/*.json    │
+                                            │  (in repo, PR-flow updates)  │
+                                            └─────────────┬────────────────┘
+                                                          │ imported at build
+                                                          ▼
+┌──────────────┐    POST /api/extract    ┌────────────────────────────────────────┐
+│  Next.js     │ ──────────────────────► │  Route Handlers (Node runtime)         │
+│  App Router  │                         │  ┌────────────────────────────────┐    │
+│  (RSC + CSR) │ ◄── streaming SSE ───── │  │ AI Pipeline                    │    │
+│              │    POST /api/plans/gen  │  │ 1 extract  → Brief             │    │
+│              │                         │  │ 2 dsp-gate → DspAssessment     │    │
+│              │ ──── Server Actions ──► │  │ 3 retrieve → CapabilityIds[]   │ ◄──┼──── catalog (in-process)
+│              │  updateLine, exportCsv  │  │ 4 generate → Plan (LLM stream) │    │
+│              │  listMyPlans, getPlan   │  │ 5 validate → ValidationResult  │    │
+└──────┬───────┘                         │  └─────────┬──────────────────────┘    │
+       │                                 │            │                            │
+       │ session cookie (Auth.js v5)     │            ▼                            │
+       │                                 │   ┌────────────────────┐                │
+       │                                 │   │ Anthropic Claude   │                │
+       │                                 │   │ Sonnet 4.6 / Haiku │                │
+       │                                 │   │ 4.5 (cached system)│                │
+       │                                 │   └────────────────────┘                │
+       │                                 │            │                            │
+       │                                 │            ▼                            │
+       │                                 │   ┌────────────────────┐                │
+       │                                 │   │ Vercel Postgres    │                │
+       │                                 │   │ users, briefs,     │                │
+       │                                 │   │ plans, plan_lines, │                │
+       │                                 │   │ plan_edits,        │                │
+       │                                 │   │ model_calls,       │                │
+       │                                 │   │ prompt_versions    │                │
+       │                                 │   └────────────────────┘                │
+       │                                 │                                         │
+       │                                 │   ┌────────────────────┐                │
+       │                                 │   │ Deal snapshot      │ ◄─ Vercel cron │
+       │                                 │   │ Vercel Blob JSON   │    daily 06:00 │
+       │                                 │   │ deals-YYYY-MM-DD   │    America/    │
+       │                                 │   └────────────────────┘    Toronto     │
+       │                                 └────────────────────────────────────────┘
+       ▼
+  Sentry (errors)  ◄─── all server code via @sentry/nextjs</pre>
+<p><strong>Happy path:</strong> brief text → <code>/api/extract</code> (Sonnet, 1–2s) → editable <code>Brief</code> → user confirms → <code>/api/plans/generate</code> streams <code>DspAssessment</code> then plan lines (Sonnet, 10–18s) → post-validation → persist → client renders streamed plan and enters edit mode where each edit fires a Server Action writing to <code>plan_edits</code>.</p>
+
+<h2>2. Architecture Principles</h2>
+<ol>
+  <li><strong>Deterministic before LLM.</strong> Anything reducible to a filter, rule, or lookup is deterministic. LLM tokens on closed-form problems import non-determinism, latency, and cost for no recall gain.</li>
+  <li><strong>Structured output is the contract.</strong> The plan schema is the single source of truth across AI engineer, full-stack engineer, and QA. Locked week one; every diff after pays rework.</li>
+  <li><strong>Audit everything once.</strong> Every plan reconstructible from <code>brief_snapshot</code>, <code>prompt_version_id</code>, <code>catalog_version</code>, <code>deal_snapshot_date</code>. Half a day in v1; impossible to retrofit in v3.</li>
+  <li><strong>Plan edits are signal.</strong> Inline, optimistic, structured event per change. Painful editing kills the team's feedback loop and the cultural mechanic regresses unseen.</li>
+  <li><strong>DSP visibility is a UI requirement, not a model requirement.</strong> A model that picked the right answer is wasted if the UI buries the <code>dsp_justification</code>.</li>
+  <li><strong>Sprint 1 ships the eval with the product.</strong> Without it the cultural mechanic regresses on the first prompt tweak.</li>
+</ol>
+
+<div class="part-header">PART A — BACKEND &amp; AI PIPELINE</div>
+
+<h2>3. AI Pipeline (5 Stages)</h2>
+<p>Single in-process composition inside <code>/src/lib/pipeline/</code>. No queue, no worker — Vercel function timeout on Pro is 300s, well above the 30s budget. Anthropic SDK only with prompt-caching beta header if not GA by build time.</p>
+<table>
+  <thead><tr><th>Stage</th><th>Input</th><th>Output</th><th>Kind</th><th>Model</th><th>Cache scope</th><th>Latency</th><th>Failure</th></tr></thead>
+  <tbody>
+    <tr><td>1. Extraction</td><td>Free-text brief (≤4k chars)</td><td><code>Brief</code> (11 fields)</td><td>LLM, tool-use forced</td><td><code>claude-sonnet-4-6</code></td><td>system + field schema (~800 tok)</td><td><strong>2.0s p95</strong></td><td>Schema fail → 1 retry with errors injected; second pass → partial Brief with <code>_unknown</code> flags</td></tr>
+    <tr><td>2. DSP gate</td><td><code>Brief</code></td><td><code>DspAssessment</code></td><td><strong>Deterministic</strong></td><td>none</td><td>n/a</td><td>&lt;5ms</td><td>Cannot fail; total over brief domain</td></tr>
+    <tr><td>3. Retrieval</td><td>Brief + eligible vendors</td><td>filtered <code>Capability[]</code></td><td><strong>Deterministic</strong> filter on channels∩scope, kpi, vendor-type</td><td>none</td><td>n/a</td><td>&lt;10ms</td><td>Empty subset → abort with <code>RETRIEVAL_EMPTY</code></td></tr>
+    <tr><td>4. Plan generation</td><td>Brief, assessment, capabilities, deal subset</td><td><code>Plan</code> (streamed)</td><td>LLM, tool-use forced, tool <code>emit_plan</code></td><td><code>claude-sonnet-4-6</code></td><td>system + full catalog (~8–12k tok)</td><td><strong>12–18s p95</strong>, first token ≤5s</td><td>Validation fail → 1 retry with errors injected; second → <code>VALIDATION_FAILED</code></td></tr>
+    <tr><td>5. Post-validation</td><td>Plan</td><td><code>ValidationResult</code></td><td><strong>Deterministic</strong></td><td>none</td><td>n/a</td><td>&lt;50ms</td><td>On success, write Plan + lines + ModelCall in single transaction</td></tr>
+  </tbody>
+</table>
+<p><strong>Total latency target:</strong> under 25s p95, first plan line visible under 6s.</p>
+
+<h3>Stage-2 rules (deterministic DSP gate)</h3>
+<ul>
+  <li><strong>DV360 eligible iff</strong> <code>brief.channelsInScope</code> includes <code>"youtube"</code>. Reason: YouTube walled-garden inventory.</li>
+  <li><strong>TTD eligible iff</strong> brief has a retargeting-pool signal (audience mentions retargeting / site visitors / cart abandoners) <strong>OR</strong> <code>kpi ∈ {CPA, CTR}</code> AND <code>goal === "performance"</code>.</li>
+  <li><strong>Amazon DSP eligible iff</strong> <code>vertical ∈ retail-endemic-list</code> AND <code>kpi ∈ {CPA, CTR}</code>.</li>
+  <li>Otherwise all DSPs rejected with reasons attached. Each eligible vendor carries <code>share_ceiling</code> (DV360 25%, TTD 35%, Amazon DSP 35%) and <code>share_ceiling_reason</code>.</li>
+  <li>The LLM cannot introduce a DSP line absent from <code>eligible[]</code>; the validator rejects.</li>
+</ul>
+
+<h3>Why these choices</h3>
+<ul>
+  <li><strong>Sonnet 4.6, not Opus, for generation:</strong> the cultural job is enforced by the gate + schema. Opus is ~5× cost for marginal quality. Promote only if eval shows Sonnet regressing on rationale judges.</li>
+  <li><strong>Structured filter, not vector search for stage 3:</strong> catalog is closed-vocabulary, ≤200 entries, with explicit channels/kpis. Embeddings add complexity for zero recall gain.</li>
+  <li><strong>Haiku 4.5 held in reserve.</strong> The only obvious Haiku target is explicitly deferred per PRD §3.</li>
+  <li><strong>Prompt caching:</strong> system prompt + full catalog in one <code>cache_control: { type: 'ephemeral' }</code> block. ~85% hit rate within a session. Per-call cost ~$0.06 → ~$0.02 once warm.</li>
+</ul>
+
+<h2>4. Data Layer</h2>
+<h3>4.1 Postgres tables (Vercel Postgres, schema <code>app</code>)</h3>
+<pre>CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE app.users (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  email           text UNIQUE NOT NULL,
+  display_name    text,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  last_login_at   timestamptz
+);
+
+CREATE TABLE app.prompt_versions (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  stage           text NOT NULL CHECK (stage IN ('extract','generate')),
+  semver          text NOT NULL,
+  git_sha         text NOT NULL,
+  prompt_hash     text NOT NULL,
+  model_id        text NOT NULL,
+  notes           text,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (stage, semver)
+);
+
+CREATE TABLE app.briefs (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         uuid NOT NULL REFERENCES app.users(id),
+  raw_text        text NOT NULL,
+  extracted       jsonb NOT NULL,
+  extract_prompt_version_id uuid NOT NULL REFERENCES app.prompt_versions(id),
+  edits           jsonb NOT NULL DEFAULT '[]'::jsonb,
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE app.plans (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         uuid NOT NULL REFERENCES app.users(id),
+  brief_id        uuid NOT NULL REFERENCES app.briefs(id),
+  brief_snapshot  jsonb NOT NULL,
+  dsp_assessment  jsonb NOT NULL,
+  total_budget    integer NOT NULL,
+  generated_at    timestamptz NOT NULL DEFAULT now(),
+  generate_prompt_version_id uuid NOT NULL REFERENCES app.prompt_versions(id),
+  catalog_version text NOT NULL,
+  deal_snapshot_date date NOT NULL,
+  status          text NOT NULL DEFAULT 'draft'
+                  CHECK (status IN ('draft','exported','archived'))
+);
+CREATE INDEX plans_user_id_generated_at_idx ON app.plans(user_id, generated_at DESC);
+
+CREATE TABLE app.plan_lines (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  plan_id         uuid NOT NULL REFERENCES app.plans(id) ON DELETE CASCADE,
+  ordinal         integer NOT NULL,
+  vendor          text NOT NULL,
+  vendor_type     text NOT NULL CHECK (vendor_type IN ('SSP','DSP','AdCP')),
+  channel         text NOT NULL,
+  path            text NOT NULL CHECK (path IN ('ssp_direct','adcp','dsp')),
+  spend_pct       numeric(5,2) NOT NULL,
+  spend_dollars   integer NOT NULL,
+  deal_refs       text[] NOT NULL DEFAULT '{}',
+  capability_ids  text[] NOT NULL DEFAULT '{}',
+  rationale       text NOT NULL,
+  allocation_rationale text NOT NULL,
+  dsp_justification text,
+  share_ceiling   numeric(5,2),
+  share_ceiling_reason text,
+  CONSTRAINT dsp_fields CHECK (
+    (vendor_type = 'DSP'  AND dsp_justification IS NOT NULL AND share_ceiling IS NOT NULL)
+    OR (vendor_type &lt;&gt; 'DSP' AND dsp_justification IS NULL AND share_ceiling IS NULL)
+  )
+);
+CREATE INDEX plan_lines_plan_id_ordinal_idx ON app.plan_lines(plan_id, ordinal);
+
+CREATE TABLE app.plan_edits (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  plan_id         uuid NOT NULL REFERENCES app.plans(id) ON DELETE CASCADE,
+  line_id         uuid REFERENCES app.plan_lines(id) ON DELETE CASCADE,
+  user_id         uuid NOT NULL REFERENCES app.users(id),
+  field           text NOT NULL,
+  old_value       jsonb NOT NULL,
+  new_value       jsonb NOT NULL,
+  edited_at       timestamptz NOT NULL DEFAULT now(),
+  exceeds_ceiling boolean NOT NULL DEFAULT false
+);
+
+CREATE TABLE app.model_calls (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         uuid REFERENCES app.users(id),
+  plan_id         uuid REFERENCES app.plans(id) ON DELETE SET NULL,
+  brief_id        uuid REFERENCES app.briefs(id) ON DELETE SET NULL,
+  stage           text NOT NULL,
+  prompt_version_id uuid NOT NULL REFERENCES app.prompt_versions(id),
+  model_id        text NOT NULL,
+  request         jsonb NOT NULL,
+  response        jsonb NOT NULL,
+  input_tokens    integer NOT NULL,
+  output_tokens   integer NOT NULL,
+  cache_read_tokens  integer NOT NULL DEFAULT 0,
+  cache_write_tokens integer NOT NULL DEFAULT 0,
+  cost_usd        numeric(10,6) NOT NULL,
+  latency_ms      integer NOT NULL,
+  validation_ok   boolean,
+  validation_errors jsonb,
+  retry_of_id     uuid REFERENCES app.model_calls(id),
+  is_eval_run     boolean NOT NULL DEFAULT false,
+  run_id          text,
+  created_at      timestamptz NOT NULL DEFAULT now()
+);</pre>
+<p><strong>Audit columns:</strong> <code>briefs.raw_text</code>, <code>briefs.extracted</code>, <code>plans.brief_snapshot</code>, <code>plans.dsp_assessment</code>, <code>plans.catalog_version</code>, <code>plans.deal_snapshot_date</code>, all of <code>plan_edits</code>, all of <code>model_calls</code>. <code>brief_snapshot</code> is intentionally denormalized — a user editing their brief after generation must not mutate the plan's input record. Provide <code>getPlanInputBrief(planId)</code> helper; ban direct <code>plans → briefs</code> joins for input reads.</p>
+<p>ORM: <strong>Drizzle</strong> (Vercel Postgres first-class).</p>
+
+<h3>4.2 Capabilities catalog</h3>
+<ul>
+  <li><strong>Location:</strong> <code>/src/data/catalog/capabilities.json</code>.</li>
+  <li><strong>Schema:</strong> the <code>Capability</code> type from <code>types.ts</code>.</li>
+  <li><strong>Update flow:</strong> PR to <code>main</code>. Required reviewer: catalog owner (PRD #2). CI validates shape + runs regression suite. Merge → redeploy; <code>plans.catalog_version = git sha</code>.</li>
+  <li><strong>Cutover trigger:</strong> first time a Strategist reports a stale citation in production, <strong>or</strong> a second capability change ships within 7 days. Promote to Airtable/Notion-as-DB with 5-min cache. Don't pre-build.</li>
+</ul>
+
+<h3>4.3 Deal snapshot</h3>
+<ul>
+  <li><strong>Format:</strong> <code>{ snapshotDate, deals: { [vendor]: DealRef[] } }</code>.</li>
+  <li><strong>Storage:</strong> Vercel Blob, key <code>deal-snapshots/YYYY-MM-DD.json</code>. Public-read, authed writes.</li>
+  <li><strong>Refresh:</strong> Vercel Cron <code>0 10 * * *</code> UTC, calls <code>/api/cron/refresh-deals</code>. Sprint 1 reads <code>/src/data/deal-snapshot-seed.json</code>; replacing with live MCP calls is sprint 2+.</li>
+  <li><strong>Naming:</strong> <code>planning-deal-snapshot-*</code> so buying agent's freshness need is an explicit handoff problem.</li>
+</ul>
+
+<h2>5. API Surface</h2>
+<p>Convention: <strong>Server Actions</strong> for mutations triggered by a form/button where streaming isn't needed; <strong>Route Handlers</strong> for streaming, cron, and anything outside RSC.</p>
+<table>
+  <thead><tr><th>Surface</th><th>Kind</th><th>Method/path</th><th>Request</th><th>Response</th><th>Stream</th></tr></thead>
+  <tbody>
+    <tr><td>Extract brief</td><td>Route Handler</td><td><code>POST /api/extract</code></td><td><code>{ rawText }</code></td><td><code>{ brief, briefId }</code></td><td>No</td></tr>
+    <tr><td>Generate plan</td><td>Route Handler</td><td><code>POST /api/plans/generate</code></td><td><code>{ briefId, brief }</code></td><td>SSE: <code>dsp_assessment</code>, <code>line</code>, <code>validation</code>, <code>plan</code></td><td><strong>Yes</strong></td></tr>
+    <tr><td>Update plan line</td><td>Server Action</td><td><code>updatePlanLine(...)</code></td><td>patch</td><td><code>{ plan, edits }</code></td><td>No</td></tr>
+    <tr><td>Export CSV</td><td>Route Handler</td><td><code>GET /api/plans/:id/export.csv</code></td><td>path</td><td><code>text/csv</code></td><td>No</td></tr>
+    <tr><td>Export markdown</td><td>Server Action</td><td><code>exportPlanMarkdown</code></td><td><code>{ planId }</code></td><td><code>{ markdown }</code></td><td>No</td></tr>
+    <tr><td>List my plans</td><td>Server Action</td><td><code>listMyPlans()</code></td><td>—</td><td><code>PlanSummary[]</code></td><td>No</td></tr>
+    <tr><td>Get plan</td><td>Server Action</td><td><code>getPlan(planId)</code></td><td><code>{ planId }</code></td><td><code>{ plan, edits }</code></td><td>No</td></tr>
+    <tr><td>Cron: refresh deals</td><td>Route Handler</td><td><code>GET /api/cron/refresh-deals</code></td><td>cron header</td><td><code>{ snapshotDate }</code></td><td>No</td></tr>
+  </tbody>
+</table>
+<p><strong>CSV column order (locked for AdOps):</strong> <code>ordinal, vendor, vendor_type, path, channel, spend_pct, spend_dollars, deal_refs, capability_ids, rationale, allocation_rationale, dsp_justification, share_ceiling, share_ceiling_reason</code>. Reordering after sprint 1 is a breaking change.</p>
+<p><strong>Streaming:</strong> Anthropic SDK <code>messages.stream()</code> with <code>tool_use</code> produces partial JSON. Server parses incrementally (<code>partial-json</code> package, ~3kb) and emits an SSE event per fully-formed plan line. Final <code>event: plan</code> after validation. Retries server-side, transparent to client.</p>
+<p><strong>Auth on both surfaces:</strong> Next.js 16 docs warn Server Functions are reachable by direct POST. Both call <code>await requireUser()</code> at top — implement once in <code>/src/lib/auth/session.ts</code>.</p>
+
+<div class="part-header">PART B — FRONTEND ARCHITECTURE</div>
+
+<h2>6. Route Map (Next.js App Router)</h2>
+<pre>app/
+  layout.tsx                          [server]  AuthShell, fonts, Sentry init
+  page.tsx                            [server]  redirect → /plans
+  plans/
+    layout.tsx                        [server]  authed shell, nav, user chip
+    page.tsx                          [server]  list — server-fetched
+    new/
+      page.tsx                        [server]  brief intake, hosts &lt;BriefInput/&gt;
+    [id]/
+      page.tsx                        [server]  fetch plan + brief, mount &lt;PlanWorkspace/&gt;
+      not-found.tsx                   [server]
+      error.tsx                       [client]  segment error boundary
+      loading.tsx                     [server]  skeleton shell
+  api/
+    plans/[id]/stream/route.ts        [server]  GET, streams plan
+  actions/
+    plans.ts                          [server]  create, updateBrief, patchLine, logEdit, exportCsv</pre>
+<ul>
+  <li><strong><code>/plans</code> is a route.</strong> Strategists return to past plans; sidebar is sprint-2.</li>
+  <li><strong><code>/plans/new</code> is a route.</strong> Back button works; refresh doesn't nuke a paste.</li>
+  <li><strong><code>/plans/[id]</code></strong> carries confirmation banner + table + assessment + export. Confirmation is an <strong>inline section</strong>, not a separate route.</li>
+  <li><strong>No <code>/plans/[id]/edit</code>.</strong> Edit is inline; separating would regress edit-as-feedback.</li>
+  <li><strong>API route only for streaming.</strong> Everything else through Server Actions.</li>
+</ul>
+
+<h2>7. Component Tree</h2>
+<pre>&lt;AuthShell&gt;                                            (server)
+  &lt;SiteHeader/&gt;                                        (server)  mark, user chip, "New plan"
+  &lt;main&gt;
+    /plans                → &lt;PlansList/&gt;               (server)
+    /plans/new            → &lt;BriefInput/&gt;              (client)
+    /plans/[id]           → &lt;PlanWorkspace/&gt;           (client)
+        &lt;PlanWorkspaceHeader/&gt;                         (client)
+        &lt;ExtractedBriefConfirmation/&gt;                  (client)
+        &lt;DspGateSummary/&gt;                              (client)
+        &lt;EditsCapturedIndicator/&gt;                      (client)
+        &lt;PlanTable/&gt;                                   (client)
+            &lt;PlanLineRow/&gt; × N                         (client)
+            &lt;StreamingSkeletonRow/&gt; × (expected − N)   (client)
+            &lt;PlanTableFooter/&gt;                         (client)
+        &lt;ValidationIssues/&gt;                            (client)
+  &lt;Toaster/&gt;                                           (client)  shadcn sonner</pre>
+
+<table>
+  <thead><tr><th>Component</th><th>S/C</th><th>Owns</th></tr></thead>
+  <tbody>
+    <tr><td><code>AuthShell</code></td><td>server</td><td>auth gate, allowlist redirect</td></tr>
+    <tr><td><code>BriefInput</code></td><td>client</td><td>textarea, "Use example", submit</td></tr>
+    <tr><td><code>ExtractedBriefConfirmation</code></td><td>client</td><td>11-field form (RHF + zod), per-field edit capture</td></tr>
+    <tr><td><code>PlanWorkspace</code></td><td>client</td><td>URL→state hydration, edit-count diff, stream subscription</td></tr>
+    <tr><td><code>DspGateSummary</code></td><td>client</td><td>one-line summary; expand-to-read rejections</td></tr>
+    <tr><td><code>EditsCapturedIndicator</code></td><td>client</td><td>pill, count</td></tr>
+    <tr><td><code>PlanTable</code></td><td>client</td><td>colgroup, header, footer, row iteration</td></tr>
+    <tr><td><code>PlanLineRow</code></td><td>client</td><td>one <code>&lt;tr&gt;</code>, ceiling warning, edit acks</td></tr>
+    <tr><td><code>StreamingSkeletonRow</code></td><td>client</td><td>skeleton <code>&lt;td&gt;</code>s matching colgroup</td></tr>
+    <tr><td><code>ExportMenu</code></td><td>client</td><td>Export CSV, Copy markdown</td></tr>
+    <tr><td><code>ErrorBoundary</code></td><td>client</td><td>recoverable error UI</td></tr>
+  </tbody>
+</table>
+
+<h2>8. The DSP-Line Visual Treatment Decision</h2>
+<p><strong>Decision: dedicated always-visible justification column, populated and prominently styled only on DSP lines.</strong></p>
+<p><strong>Defense vs row-tint:</strong> tint requires the eye to learn "this color = read column X"; a screenshot pasted into a slide deck strips that signal. The cultural mechanic must travel with the row — color does not.</p>
+<p><strong>Defense vs vendor-cell badge + truncated justification:</strong> collapsing forces a tooltip or expand to read — the "buried in expand-to-read" failure mode. AdOps pasting into Sheets loses badge styling.</p>
+<p>Absence of justification on SSP/AdCP lines becomes a silent em-dash — the right default. DSP rows get a 2px <strong>left border on the justification cell only</strong> in functional amber (<code>border-amber-500</code>). Survives screenshot, accessibility (text + shape, not color-only), and is implementable in shadcn primitives in under an hour.</p>
+
+<h2>9. Table Design</h2>
+<table>
+  <thead><tr><th>#</th><th>Column</th><th>Align</th><th>Type</th><th>Max</th><th>Truncation</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Vendor</td><td>left</td><td>prose, semibold</td><td>120px</td><td>none</td></tr>
+    <tr><td>2</td><td>Type</td><td>left</td><td>badge</td><td>64px</td><td>n/a</td></tr>
+    <tr><td>3</td><td>Channel</td><td>left</td><td>prose</td><td>88px</td><td>none</td></tr>
+    <tr><td>4</td><td>Spend %</td><td><strong>right</strong></td><td>tabular num, editable</td><td>96px</td><td>n/a</td></tr>
+    <tr><td>5</td><td>Spend $</td><td><strong>right</strong></td><td>tabular num, computed</td><td>112px</td><td>n/a</td></tr>
+    <tr><td>6</td><td>Deal / PMP</td><td>left</td><td>mono chips</td><td>168px</td><td>wrap</td></tr>
+    <tr><td>7</td><td>Capabilities</td><td>left</td><td>prose list, stacked</td><td>168px</td><td>name only; full on <code>title</code></td></tr>
+    <tr><td>8</td><td>Rationale</td><td>left</td><td>prose, editable</td><td>240px</td><td><code>line-clamp-2</code>, expand</td></tr>
+    <tr><td>9</td><td>Allocation rationale</td><td>left</td><td>prose, editable</td><td>220px</td><td><code>line-clamp-2</code>, expand</td></tr>
+    <tr><td>10</td><td>DSP justification</td><td>left</td><td>prose</td><td>260px</td><td><code>line-clamp-3</code>, expand (read-only)</td></tr>
+  </tbody>
+</table>
+<p><strong>Total width ~1356px.</strong> Fits 1280px with light scroll; breathes at 1440px+.</p>
+<p><strong>Type stack:</strong> Inter Variable (sans, with <code>tabular-nums</code>), JetBrains Mono Variable (capability/deal IDs).</p>
+<p><strong>Edit affordances:</strong> dotted underline at rest → solid on hover (cursor-text) → 1px border + inline textarea on focus → post-edit solid underline + <code>font-medium</code> permanently. Non-editable cells: no underline, no cursor change. Workspace-level "edits captured" pill is the global ack; per-row ticks add noise.</p>
+<p><strong>Density target:</strong> 8–10 lines visible on 1080p without scroll. Row 56–64px. Header 36px, footer 36px, page chrome ~140px → 904px available → 14 rows at 64px.</p>
+<p><strong>Screenshot survival:</strong> table must look intentional cropped to cols 1–5 and cols 1, 2, 10 — the two screenshots a Strategist will paste. No row-level tints, no decorative gridlines.</p>
+
+<h2>10. State Management</h2>
+<table>
+  <thead><tr><th>Concern</th><th>Lives in</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Brief text (pre-extraction)</td><td>client state in <code>&lt;BriefInput/&gt;</code></td><td>ephemeral; refresh loss OK</td></tr>
+    <tr><td>Extracted Brief (form)</td><td>react-hook-form seeded from server prop</td><td>RHF + zod mirrors AI engineer's schema</td></tr>
+    <tr><td>Plan (committed)</td><td>Vercel Postgres, hydrated as <code>initialPlan</code></td><td>URL canonical; refresh restores</td></tr>
+    <tr><td>Plan (in-flight)</td><td><code>useState</code> in workspace, appended via AI SDK hook</td><td>partial → state → table</td></tr>
+    <tr><td>Edits (uncommitted)</td><td><code>useState&lt;PlanLine[]&gt;</code> + diff vs <code>originalLines</code></td><td>optimistic; persisted per edit</td></tr>
+    <tr><td>Edit count</td><td>derived selector</td><td>one source of truth</td></tr>
+  </tbody>
+</table>
+<p><strong>Original plan stays pinned on the server record</strong> (<code>plans.brief_snapshot</code>). Edits diff against it — "edits diverging from model output" is the team's signal, not "edits since previous edit."</p>
+
+<h3>Edit capture event</h3>
+<pre>export type EditEvent = {
+  edit_id: string;
+  plan_id: string;
+  line_id: string | null;
+  field: 'spendPct' | 'rationale' | 'allocationRationale' | 'dspJustification';
+  before: string | number;
+  after: string | number;
+  user_id: string;
+  ts: string;
+  prompt_version: string;
+  session_id: string;
+};</pre>
+<p>Optimistic update lands instantly. Server Action runs in <code>startTransition</code>. Failed write toasts "edit not saved, retry" — does <strong>not</strong> roll back UI. Debounce prose at 600ms on blur; spend % fires on commit (Enter/blur).</p>
+
+<h2>11. Streaming UX</h2>
+<p>Vercel AI SDK <code>streamObject</code>; server route at <code>app/api/plans/[id]/stream/route.ts</code> returns a stream typed against <code>Plan.lines[]</code>. Client uses <code>useObject({ api, schema })</code> exposing a partial array that grows as tokens arrive.</p>
+<p><strong>First 5 seconds:</strong></p>
+<ol>
+  <li><strong>0.0s</strong> — User clicks "Generate plan". Server Action writes brief, returns plan id.</li>
+  <li><strong>0.3s</strong> — <code>/plans/[id]</code> mounts. Renders header, collapsed brief banner, table with 8 skeleton rows.</li>
+  <li><strong>0.5s</strong> — Stream opens. Pulsing dot in footer: "Drafting plan…"</li>
+  <li><strong>3–8s</strong> — First line resolves: skeleton replaced with <code>fade-in duration-200</code>.</li>
+  <li><strong>5s</strong> — User sees brief banner editable, first 1–2 real lines, rest pending. Can scroll, expand gate summary, or wait.</li>
+</ol>
+<p><strong>Skeleton widths match the colgroup exactly</strong> so no reflow when rows land. <code>motion-safe:animate-pulse</code> only — on <code>prefers-reduced-motion</code> the pulse stops; real rows still distinguishable by text content. No shimmer.</p>
+<p><strong>Mid-stream error:</strong> keep rendered rows; replace remaining skeletons with a full-width row: "Generation stopped at line N of M. [Resume] [Start over]". Sentry captures with <code>planId</code>, <code>linesReceived</code>.</p>
+
+<h2>12. Error and Edge States</h2>
+<table>
+  <thead><tr><th>State</th><th>User sees</th><th>Action</th><th>Sentry</th></tr></thead>
+  <tbody>
+    <tr><td>Empty <code>/plans</code></td><td>"No plans yet." + CTA + faded sample plan</td><td>Click CTA</td><td>none</td></tr>
+    <tr><td>Empty plan output</td><td>"Agent returned zero lines. Brief likely underspecified. [Edit] [Retry]"</td><td>Edit/retry</td><td>warn <code>empty_plan_returned</code></td></tr>
+    <tr><td>Model timeout (30s)</td><td>Inline "Taking longer than usual…" → at 60s "Timed out. [Try again] [Edit]"</td><td>Retry/edit</td><td>error <code>generation_timeout</code></td></tr>
+    <tr><td>Schema mismatch</td><td>Red banner: "Invalid plan. Team notified. [Try again]"</td><td>Retry</td><td>error <code>schema_validation_failed</code></td></tr>
+    <tr><td>Stream drop</td><td>See §11 mid-stream</td><td>Resume/restart</td><td>warn <code>stream_aborted</code></td></tr>
+    <tr><td>Edit conflict</td><td>Toast: "Edit not saved. [Retry]" — value remains</td><td>Retry</td><td>warn <code>edit_persistence_failed</code></td></tr>
+    <tr><td>Export failure</td><td>Toast: "Export failed — [Try again] or [Copy markdown]"</td><td>Try again</td><td>warn <code>export_failed</code></td></tr>
+    <tr><td>Auth expired</td><td>"Session expired. [Sign in]"; return URL preserved</td><td>Sign in</td><td>none</td></tr>
+    <tr><td>Not found / not owned</td><td>404: "Plan not found. [See your plans]"</td><td>Back</td><td>warn <code>plan_not_found</code></td></tr>
+  </tbody>
+</table>
+
+<h2>13. Microcopy (terminology locked)</h2>
+<table>
+  <thead><tr><th>Surface</th><th>Copy</th></tr></thead>
+  <tbody>
+    <tr><td>Brief heading</td><td>"Paste a campaign brief"</td></tr>
+    <tr><td>Brief sub</td><td>"The agent extracts structured fields, then drafts a media plan with SSP-direct as the default and DSPs only where they earn a seat."</td></tr>
+    <tr><td>Brief CTA</td><td><strong>"Draft plan"</strong></td></tr>
+    <tr><td>Confirmation heading</td><td>"Confirm the brief"</td></tr>
+    <tr><td>Confirmation CTA</td><td><strong>"Generate plan"</strong></td></tr>
+    <tr><td>Workspace heading</td><td>"Draft plan — {advertiser}"</td></tr>
+    <tr><td>Edits pill</td><td>"{N} edit{s} captured — these become structured feedback for the planning agent."</td></tr>
+    <tr><td>DSP gate, none earned</td><td>"DSP gate · no DSP earned a seat on this plan"</td></tr>
+    <tr><td>DSP gate, N earned</td><td>"DSP gate · {N} DSP{s} earned a seat ({names}), {M} rejected"</td></tr>
+    <tr><td>Export menu items</td><td>"Export CSV (for AdOps)", "Copy as markdown"</td></tr>
+    <tr><td>Regenerate confirm</td><td>"Regenerate will replace your current draft and discard {N} edit{s}. Continue?"</td></tr>
+    <tr><td>Empty <code>/plans</code></td><td>"No plans yet." + "Draft your first plan"</td></tr>
+    <tr><td>Error template</td><td>"We couldn't generate this plan — {reason}. [Try again] [Edit fields and retry]"</td></tr>
+  </tbody>
+</table>
+<p><strong>Terminology lock:</strong> "plan" everywhere. "Draft plan" is the heading qualifier; otherwise "plan."</p>
+
+<h2>14. Accessibility Baseline</h2>
+<ul>
+  <li><strong>Contrast:</strong> WCAG AA. <code>zinc-700</code> on white floor. <code>amber-900</code> on <code>amber-50</code> for DSP justification cell.</li>
+  <li><strong>Focus:</strong> shadcn 2px ring on every <code>&lt;input&gt;</code>, <code>&lt;button&gt;</code>, <code>&lt;textarea&gt;</code>. Tab order: row by row, left to right, only editable cells; non-editable wrappers use <code>tabIndex={-1}</code>.</li>
+  <li><strong>Color is never the only signal:</strong> DSP rows = amber + left border + populated text. Over-ceiling = amber text + triangle glyph + literal "over ceiling of X%."</li>
+  <li><strong>Motion:</strong> <code>motion-safe:animate-pulse</code>; reduced motion → static "Generating…" line count.</li>
+  <li><strong>Live regions:</strong> streaming footer <code>aria-live="polite"</code>; edits pill <code>aria-live="polite" aria-atomic="true"</code>.</li>
+  <li><strong>Esc</strong> collapses expanded rationale textarea without saving; <strong>Enter</strong> on spend % commits and advances focus to next row's spend cell.</li>
+</ul>
+
+<div class="part-header">PART C — QA, EVALUATION &amp; CI</div>
+
+<h2>15. Wrong-Plan Taxonomy → Detection</h2>
+<table>
+  <thead><tr><th>Class</th><th>Detection</th><th>Severity</th><th>Test class</th></tr></thead>
+  <tbody>
+    <tr><td>DSP-default creep</td><td><code>dsp_share_threshold</code>: pure-SSP 0%, YouTube 25%, retargeting/retail 40%, mixed 15%</td><td>Hard</td><td>pure-SSP, retail-perf, edge</td></tr>
+    <tr><td>Justification absence</td><td><code>dsp_justification_present_and_nonempty</code> (regex: ≥40 chars, ≥1 brief token)</td><td>Hard</td><td>YouTube, retargeting, retail</td></tr>
+    <tr><td>Justification stubbing</td><td>LLM judge <code>dsp_justification_adequacy</code></td><td>Soft</td><td>same</td></tr>
+    <tr><td>Capability hallucination</td><td><code>capability_ids_resolve</code> lookup</td><td>Hard, 0-tol</td><td>All</td></tr>
+    <tr><td>Deal hallucination</td><td><code>deal_refs_resolve</code> lookup</td><td>Hard, 0-tol</td><td>All</td></tr>
+    <tr><td>Constraint violation</td><td><code>geo_subset_of_brief</code>, <code>inventory_matches_brief</code>, <code>exclusions_respected</code></td><td>Hard</td><td>premium, retargeting</td></tr>
+    <tr><td>KPI/channel mismatch</td><td><code>kpi_channel_match</code> lookup table</td><td>Hard</td><td>edge, retail-perf</td></tr>
+    <tr><td>Budget errors</td><td><code>shares_sum_to_100</code>, <code>dollars_match_budget</code>, <code>no_negative_shares</code></td><td>Hard</td><td>All</td></tr>
+    <tr><td>Rationale quality</td><td>LLM judge pairwise vs reference</td><td>Soft</td><td>All</td></tr>
+  </tbody>
+</table>
+
+<h2>16. Golden Brief Set</h2>
+<p><strong>Count: 20 briefs.</strong> Owned in <code>evals/briefs/</code>, JSON, PR-versioned.</p>
+<table>
+  <thead><tr><th>Category</th><th>Count</th><th>What's tested</th></tr></thead>
+  <tbody>
+    <tr><td>pure-SSP</td><td>5</td><td>Premium video, no DSP-eligible signal. Expected DSP share = 0%.</td></tr>
+    <tr><td>YouTube-in-scope</td><td>4</td><td>Forces justified DV360. DSP share 10–25%, justification cites YouTube uniqueness.</td></tr>
+    <tr><td>retargeting-performance</td><td>3</td><td>Retargeting pool + CPA. DSP earns 25–40%.</td></tr>
+    <tr><td>retail-performance</td><td>3</td><td>Amazon retail, CPA, Amazon DSP eligible. 20–40%.</td></tr>
+    <tr><td>underspecified-edge</td><td>3</td><td>Missing KPI or geo. Extractor flags; generation blocked until confirmed.</td></tr>
+    <tr><td>contradictory</td><td>2</td><td>Premium + sub-$5 CPM, or "no UGC" + TikTok. Plan respects hard constraint, surfaces tension.</td></tr>
+  </tbody>
+</table>
+<pre>evals/
+  briefs/
+  expected/
+  fixtures/
+    catalog-snapshot.json
+    deals-snapshot.json
+  judges/
+    rationale_quality.v1.md
+    allocation_rationale_quality.v1.md
+    dsp_justification_adequacy.v1.md
+  reference-prompt-version.txt
+  manifest.json</pre>
+<p><strong>Sign-off flow:</strong> Named Strategist (PRD #1, ~4 hrs/week) reviews each reference in a PR. CODEOWNERS rule on <code>evals/expected/**</code> forces their approval. Quarterly re-validation, or on model swap. <strong>Without a named human, the eval cannot ship.</strong></p>
+
+<h2>17. Deterministic Checks</h2>
+<table>
+  <thead><tr><th>Check</th><th>Pass rule</th><th>Severity</th></tr></thead>
+  <tbody>
+    <tr><td><code>schema_conforms</code></td><td>Zod parse against locked plan schema</td><td>Hard</td></tr>
+    <tr><td><code>shares_sum_to_100</code></td><td>|sum − 100| ≤ 0.5</td><td>Hard</td></tr>
+    <tr><td><code>dollars_match_budget</code></td><td>|sum − budget| ≤ $1</td><td>Hard</td></tr>
+    <tr><td><code>no_negative_shares</code></td><td>All ∈ [0, 100]</td><td>Hard</td></tr>
+    <tr><td><code>capability_ids_resolve</code></td><td>Every id in catalog</td><td>Hard, 0-tol</td></tr>
+    <tr><td><code>deal_refs_resolve</code></td><td>Every ref in snapshot</td><td>Hard, 0-tol</td></tr>
+    <tr><td><code>dsp_justification_present_and_nonempty</code></td><td>DSP lines: ≥40 chars, ≥1 brief token</td><td>Hard</td></tr>
+    <tr><td><code>non_dsp_lines_no_justification</code></td><td>Non-DSP: <code>dspJustification === null</code></td><td>Hard</td></tr>
+    <tr><td><code>dsp_share_threshold</code></td><td>≤ category threshold</td><td>Hard</td></tr>
+    <tr><td><code>geo_subset_of_brief</code></td><td>Plan geo ⊂ <code>brief.geo</code></td><td>Hard</td></tr>
+    <tr><td><code>inventory_matches_brief</code></td><td>Premium → no <code>open-exchange</code> capabilities</td><td>Hard</td></tr>
+    <tr><td><code>kpi_channel_match</code></td><td>Static KPI→channel lookup</td><td>Hard</td></tr>
+    <tr><td><code>share_ceiling_respected</code></td><td>DSP <code>spendPct ≤ shareCeiling</code></td><td>Hard</td></tr>
+    <tr><td><code>dsp_gate_summary_consistent</code></td><td>Lines and <code>dspAssessment</code> agree</td><td>Hard</td></tr>
+    <tr><td><code>required_capabilities_present</code></td><td>≥1 of <code>requiredCapabilityIds</code></td><td>Soft</td></tr>
+    <tr><td><code>channel_mix_within_range</code></td><td>Each share within ±10pp of reference range</td><td>Soft</td></tr>
+  </tbody>
+</table>
+
+<h2>18. LLM-Judge Harness</h2>
+<p><strong>Judge model:</strong> Claude Haiku 4.5 (<code>claude-haiku-4-5-20251001</code>). Cheaper, faster, and weak enough that it won't paper over generator failures.</p>
+<p><strong>Pairwise vs absolute:</strong> Pairwise against reference. Absolute drifts ~0.5 points/month on a 1–5 rubric; pairwise stays stable because both sides move together. Matches how the named Strategist will calibrate.</p>
+<p><strong>Three judges per plan</strong> — <code>rationale_quality</code>, <code>allocation_rationale_quality</code>, <code>dsp_justification_adequacy</code> (last only on DSP plans). Each emits <code>{winner, confidence, reasons}</code>. Win rate aggregated across 20 briefs.</p>
+
+<h3>Rubric — <code>dsp_justification_adequacy</code> (the critical one)</h3>
+<pre>Compare two dsp_justification strings on the same DSP line.
+
+Prefer the one that explicitly covers all three:
+- What's unique to this DSP (inventory, data, signal SSP/AdCP cannot match).
+- What SSP-direct or AdCP CANNOT do for this brief — name the counterfactual.
+- Why this share, not larger.
+
+Penalize:
+- Asserts uniqueness without naming the source.
+- Recycles the line rationale.
+- Under 40 or over 120 words.
+
+HARD FAIL (winner = "neither", confidence = 5) if SSP/AdCP counterfactual not named.
+
+Output: {winner, confidence, reasons}.</pre>
+<p><strong>Calibration:</strong> once per sprint and on every judge prompt change, the named Strategist labels 30 plan pairs blind. <strong>Cohen's kappa ≥ 0.6</strong> per rubric; below that the rubric is revised. Monthly re-run; alert on drop &gt; 0.1. Judge model pinned to specific version. Re-calibrate on every judge model bump.</p>
+
+<h2>19. Edit-as-Signal Capture (Online Eval)</h2>
+<table>
+  <thead><tr><th>Metric</th><th>Definition</th><th>Threshold / use</th></tr></thead>
+  <tbody>
+    <tr><td><code>edits_per_plan_p50</code></td><td>Median edits per accepted plan</td><td>PRD trust metric: ≤3</td></tr>
+    <tr><td><code>spend_pct_edit_magnitude_p50</code></td><td>Median |Δ| on spendPct edits</td><td>Allocation drift indicator</td></tr>
+    <tr><td><code>regenerate_rate</code></td><td>Plans with ≥2 generations per session</td><td>Plan unusable as draft</td></tr>
+    <tr><td><code>time_to_accept_p50</code></td><td>First-generate → first-export</td><td>Coordinate with latency budget</td></tr>
+    <tr><td><code>abandoned_plan_rate</code></td><td>Created, 0 edits, 0 export in 24h</td><td>Abandoned ≠ accepted</td></tr>
+    <tr><td><code>dsp_share_edited_down_rate</code></td><td>% of plans where Strategist lowered a DSP <code>spendPct</code></td><td><strong>Smoking gun for DSP-default creep that beat the regression suite</strong></td></tr>
+  </tbody>
+</table>
+<p>Sprint 1 ships a single Next.js dashboard route reading Postgres, refreshed nightly. Weekly review meeting reads it. No real-time alerting yet.</p>
+
+<h2>20. CI Architecture (GitHub Actions)</h2>
+<p><strong>Workflow:</strong> <code>.github/workflows/eval.yml</code>. Triggers: PRs touching <code>prompts/**</code>, <code>src/lib/extract.ts</code>, <code>src/lib/generatePlan.ts</code>, <code>src/lib/validate.ts</code>, <code>src/lib/types.ts</code>, <code>evals/**</code>, <code>model.config.json</code>; nightly 02:00 UTC against main; manual dispatch after model swap.</p>
+<pre>lint ─┐
+      ├─&gt; typecheck ─&gt; deterministic_eval ─[passed]─&gt; llm_judge_eval ─&gt; comment_pr
+unit ─┘                       │
+                              └─[failed]─&gt; comment_pr (judge skipped)</pre>
+<p><strong>Flaky LLM:</strong> Generator <code>temperature: 0.2</code>, single retry on API error only, none on content failure. Judge <code>temperature: 0</code>, three judges per (plan, brief), winner via 2-of-3 majority. Each brief runs independently.</p>
+<p><strong>PR comment shape:</strong></p>
+<pre>KleverOne Eval — Prompt v0.4.1
+Hard gates: 8/8 passed
+Soft gates: 4/5 passed (rationale_quality 82% vs 85% baseline — flagged)
+DSP share on pure-SSP set: 0% (5/5) ✓
+Capability hallucinations: 0 ✓
+Latency p95: 24s ✓
+Full report: &lt;artifact-link&gt;</pre>
+<p><strong>Baseline:</strong> last green main's <code>summary.json</code> mirrored to <code>evals/baseline/summary.json</code> on every green merge. No manual approval — green is green.</p>
+
+<h2>21. Ship Gates (the hard numbers)</h2>
+<table>
+  <thead><tr><th>Gate</th><th>Threshold</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Schema conformance</td><td>100%</td><td>Break = export + UI both fail</td></tr>
+    <tr><td>Capability hallucinations</td><td>0 across 20</td><td>Catalog static; non-zero = broken prompt</td></tr>
+    <tr><td>Deal hallucinations</td><td>0 across 20</td><td>Same logic with snapshot</td></tr>
+    <tr><td>DSP share on pure-SSP set</td><td>≤15% (PRD); <strong>0% target</strong></td><td>The single regression the product exists to prevent</td></tr>
+    <tr><td>DSP justification non-empty on every DSP line</td><td>100%</td><td>A DSP line without justification IS the failure mode</td></tr>
+    <tr><td>p95 generation latency</td><td>≤25s end-to-end</td><td>5s buffer within AI engineer's 30s ceiling</td></tr>
+    <tr><td><code>rationale_quality</code> win rate</td><td>≥45%</td><td>Below 45% = decisively worse than reference; 50% = parity</td></tr>
+    <tr><td><code>allocation_rationale_quality</code> win rate</td><td>≥45%</td><td>The AC the Strategist edits against</td></tr>
+    <tr><td><code>dsp_justification_adequacy</code> win rate</td><td>≥50%</td><td>DSP justification <em>is</em> the product — no regression accepted</td></tr>
+    <tr><td>"neither" rate on DSP-justification judge</td><td>0</td><td>Means counterfactual missing — core-pattern loss</td></tr>
+  </tbody>
+</table>
+<p>PR cannot merge with any hard gate failing. Soft-gate regression requires Strategist approval on PR thread.</p>
+
+<h2>22. Failure Clustering and Triage</h2>
+<ol>
+  <li><strong>Cluster.</strong> Group failing briefs by the deterministic check tripped or the judge dimension that dropped. The cluster is the hypothesis.</li>
+  <li><strong>Drill.</strong> Pull the 3 worst examples from <code>model_calls</code> (<code>is_eval_run=true, run_id=&lt;failing&gt;</code>). Read prompts, outputs, judge reasons.</li>
+  <li><strong>Diff.</strong> Compare failing prompt version vs last green (git diff on <code>prompts/</code>). One commit usually owns the regression.</li>
+  <li><strong>Reproduce.</strong> <code>npm run eval:single -- &lt;brief-id&gt;</code> against suspect commit and previous green. The diff in outputs is the bug.</li>
+  <li><strong>Fix or accept.</strong> Revert/patch, or update reference (named-Strategist PR approval).</li>
+  <li><strong>Grow the suite.</strong> If the regression slipped past existing briefs, the cluster's signature becomes a new brief. The suite grows on every miss.</li>
+</ol>
+
+<div class="part-header">PART D — CROSS-CUTTING</div>
+
+<h2>23. Auth, Identity, Secrets</h2>
+<p><strong>v1:</strong> Auth.js (NextAuth v5) with Email/Magic-Link provider, backed by <code>app.users</code>. Email allowlist enforced in <code>signIn</code> callback. Sessions as JWTs in HTTP-only cookies. <strong>Plus</strong> Vercel "Vercel Authentication" deployment protection on production — the public URL itself requires Vercel team login before app code runs.</p>
+<p><strong>Alternative considered (Clerk):</strong> rejected. <code>app.users</code> is the load-bearing identity surface for every future agent — owning it locally is correct.</p>
+<p><strong>Path to OIDC (post-v1):</strong> Klever's IdP (likely Google Workspace; possibly Okta/Entra) lights up by adding the matching Auth.js provider and dropping email. Hours, not days, provided <code>users.email</code> stays the join key. Add <code>provider</code> + <code>provider_subject</code> when SSO ships.</p>
+<h3>Env vars (Vercel; never committed)</h3>
+<pre>ANTHROPIC_API_KEY
+DATABASE_URL                  # Vercel Postgres pooled
+DATABASE_URL_UNPOOLED         # for migrations
+BLOB_READ_WRITE_TOKEN         # Vercel Blob for deal snapshots
+AUTH_SECRET                   # NextAuth JWT signing
+AUTH_URL                      # production URL
+EMAIL_SERVER                  # SMTP (Resend recommended)
+EMAIL_FROM
+ALLOWLIST_EMAILS              # comma-separated
+SENTRY_DSN
+SENTRY_AUTH_TOKEN             # source-map uploads at build
+CRON_SECRET                   # validate Vercel Cron header</pre>
+
+<h2>24. Observability, Logging, Prompt Versioning</h2>
+<p><strong>Errors:</strong> <code>@sentry/nextjs</code> via <code>instrumentation.ts</code>. <code>release</code> set to git sha.</p>
+<p><strong>Model-call log:</strong> every Anthropic call writes one <code>model_calls</code> row inside the same transaction as the plan/brief it produced (or before, with <code>plan_id = null</code> for failed calls). Postgres is the right home, not Logflare — rows join to plans/users for debugging.</p>
+<p><strong>Confidentiality:</strong> Strategist briefs may contain client-confidential info. Treat <code>model_calls.request</code> as confidential; restrict the analytics Postgres role from reading it. Document a 90-day retention policy with a scheduled prune job (sprint 2).</p>
+<p><strong>Prompt versioning:</strong> semver + git sha + content hash, all in <code>prompt_versions</code>. Prompts live as TS template functions in <code>/src/lib/prompts/</code>. On boot, the pipeline renders each prompt against a canonical fixture, hashes it, and looks up or inserts the row. Semver bumps are manual; <strong>hash drift without a bump is a CI failure</strong>. Every plan and every model call carries <code>prompt_version_id</code> — any plan ever generated can be regenerated bit-for-bit.</p>
+
+<h2>25. Risks (Consolidated)</h2>
+<table>
+  <thead><tr><th>Risk</th><th>Layer</th><th>Mitigation</th></tr></thead>
+  <tbody>
+    <tr><td>Catalog drift without a forcing function</td><td>Backend</td><td>Catalog owner named (PRD #2); weekly "catalog last-modified" Slack check from week 3</td></tr>
+    <tr><td>Snapshot vs live deal data divergence</td><td>Backend</td><td>Name snapshot <code>planning-deal-snapshot-*</code>; buying agent's freshness need is an explicit handoff problem</td></tr>
+    <tr><td><code>brief_snapshot</code> denormalization mishandled</td><td>Backend</td><td><code>getPlanInputBrief</code> helper; PR convention bans direct <code>plans → briefs</code> joins for input reads</td></tr>
+    <tr><td>Prompt regresses to DSP-default</td><td>AI / Eval</td><td>Hard gate on DSP share in CI</td></tr>
+    <tr><td>LLM hallucinates capability / deal refs</td><td>AI / Eval</td><td>Post-validation rejects; structured output forces resolution</td></tr>
+    <tr><td>Strategists distrust output, revert to slides</td><td>Frontend</td><td>Inline-editable plan + visible allocation rationale + edit telemetry</td></tr>
+    <tr><td>Schema needs to change once GAM shape lands</td><td>Backend / PRD</td><td>v1; reserve v2 migration; thin export layer (PRD #3)</td></tr>
+    <tr><td>Golden set staleness</td><td>Eval</td><td>Quarterly named-Strategist re-review; online edit rate as leading indicator</td></tr>
+    <tr><td>Judge drift</td><td>Eval</td><td>Pin judge model version; monthly kappa re-measurement; alert on drop &gt;0.1</td></tr>
+    <tr><td>Deterministic checks insufficient</td><td>Eval</td><td>Top-10 most-edited fields classified quarterly → add check, tighten judge, or add brief</td></tr>
+  </tbody>
+</table>
+
+<h2>26. Composability — What Next Agents Inherit</h2>
+<table>
+  <thead><tr><th>Surface</th><th>Load-bearing because</th></tr></thead>
+  <tbody>
+    <tr><td><code>app.users</code> (email, id)</td><td>Every agent attributes work to a Strategist; SSO migration touches one table</td></tr>
+    <tr><td><code>app.briefs</code></td><td>Buying agent reads the same brief that produced the plan; reporting agent learns from extraction edits</td></tr>
+    <tr><td><code>app.plans</code> + <code>app.plan_lines</code></td><td>Buying agent's input. Already shaped against GAM line-item translatability. <strong>PRD #3 must close</strong> before this schema is v1-final, or buying agent inherits a translation layer</td></tr>
+    <tr><td><code>app.plan_edits</code></td><td>Optimization agent's training signal — highest-fidelity feedback the platform will ever get</td></tr>
+    <tr><td><code>app.model_calls</code> + <code>app.prompt_versions</code></td><td>Reproducibility, A/B prompt comparisons, regression debugging across all agents</td></tr>
+    <tr><td>Capabilities catalog</td><td>Shared vocabulary. One catalog, one source.</td></tr>
+    <tr><td>Deal snapshot (<code>planning-deal-snapshot-*</code>)</td><td>Planning-grade freshness only. Buying agent owns its own live path.</td></tr>
+  </tbody>
+</table>
+<p><strong>Sprint-1-only:</strong> email-magic-link auth (→ SSO), deal-snapshot seed JSON (→ MCP calls), hardcoded gate rules (→ data-driven months later).</p>
+
+<h2>27. Verification To-Dos (day 1 of sprint)</h2>
+<ol>
+  <li><strong>Anthropic prompt-caching availability</strong> for <code>claude-sonnet-4-6</code> on the team's account tier. If still beta-header territory, confirm header name and TTL.</li>
+  <li><strong>Next.js 16 streaming pattern.</strong> Architecture uses a Route Handler because Server Functions return a single response per the docs at <code>node_modules/next/dist/docs/01-app/01-getting-started/07-mutating-data.md</code> and <code>15-route-handlers.md</code>. If Next 16 has added a streaming-action pattern, prefer it.</li>
+</ol>
+<p>Neither blocks planning — both shift specific lines, not architecture.</p>
+
+<h2>28. Sprint 1 Execution Plan (suggested, 2 engineers × 10 days)</h2>
+<table>
+  <thead><tr><th>Day</th><th>AI engineer</th><th>Full-stack engineer</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Lock <code>Brief</code> + <code>Plan</code> schemas; port <code>assessDspGate</code>; prompt v0 for extraction</td><td>Bootstrap, Auth.js + allowlist, Sentry, Postgres + Drizzle, <code>instrumentation.ts</code></td></tr>
+    <tr><td>2</td><td>Extraction pipeline + retry + validator; first <code>model_calls</code> write</td><td>Route map, <code>AuthShell</code>, <code>/plans</code> with empty state</td></tr>
+    <tr><td>3</td><td>Generation prompt v0 with full catalog; tool-use <code>emit_plan</code>; partial-JSON streaming</td><td><code>BriefInput</code> + Server Action; <code>/plans/new</code></td></tr>
+    <tr><td>4</td><td>Post-validation (capability/deal resolve, share sums, justification rules)</td><td><code>ExtractedBriefConfirmation</code> with RHF+zod; field-level edit capture</td></tr>
+    <tr><td>5</td><td>Wire <code>/api/plans/generate</code> SSE; first end-to-end happy path</td><td><code>PlanWorkspace</code> skeleton; <code>PlanTable</code> columns + types + skeleton rows</td></tr>
+    <tr><td>6</td><td>Golden brief set v0 (10 briefs); deterministic checks (sums, resolve, threshold)</td><td>Streaming render; inline edit (Spend %, Rationale, Allocation); <code>logEdit</code></td></tr>
+    <tr><td>7</td><td>Briefs to 20; remaining deterministic checks; CI workflow scaffold</td><td><code>DspGateSummary</code>; <code>EditsCapturedIndicator</code>; <code>ExportMenu</code></td></tr>
+    <tr><td>8</td><td>Judge rubrics v0; calibration set; pairwise harness</td><td>Error states (timeout, schema mismatch, stream drop); <code>error.tsx</code></td></tr>
+    <tr><td>9</td><td>Tune prompts against eval; first PR-comment artifact</td><td>Polish: tabular figures, mono fonts, accessibility audit, focus order</td></tr>
+    <tr><td>10</td><td>Ship gates locked; documentation; Strategist sign-off on references</td><td>Internal walk-through; deploy; smoke test with pilot Strategist</td></tr>
+  </tbody>
+</table>
+<p>Buffer: half a day each for the surprises that will appear in week two.</p>
+
+<h2>Critical Files for Implementation</h2>
+<ul>
+  <li><code>planning-agent-mock/src/lib/types.ts</code> — contract starting point; add <code>path</code>, <code>share_ceiling</code>, <code>share_ceiling_reason</code> on <code>PlanLine</code> and a <code>BriefEdit</code> type</li>
+  <li><code>planning-agent-mock/src/lib/generatePlan.ts</code> — port <code>assessDspGate</code> verbatim as the deterministic stage-2 gate; LLM call replaces the hand-coded plan bodies</li>
+  <li><code>planning-agent-mock/src/lib/validate.ts</code> — extend with capability/deal-ref resolution, ceiling enforcement, justification-presence rules</li>
+  <li><code>planning-agent-mock/src/lib/catalog.ts</code> — move catalog out to JSON; rewrite as typed loader + helpers</li>
+  <li><code>planning-agent-mock/src/components/PlanTable.tsx</code> — preserve the dedicated-justification-column pattern; extend with edit affordances</li>
+  <li><code>planning-agent-mock/src/components/ConfirmationView.tsx</code> — replace with RHF + zod; per-field edit capture</li>
+  <li>Next.js 16 docs: <code>node_modules/next/dist/docs/01-app/01-getting-started/07-mutating-data.md</code> and <code>15-route-handlers.md</code></li>
+</ul>
+
+</body>
+</html>
